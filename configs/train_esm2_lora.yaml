@@ -1,0 +1,92 @@
+# Hydra Configuration for Fine-Tuning ESM-2 (650M) with LoRA & bf16 on 12GB RTX 4070
+seed: 42
+
+paths:
+  data_dir: "data"
+  raw_models_dir: "${paths.data_dir}/raw/bigg_models"
+  fasta_Cache_dir: "${paths.data_dir}/raw/sequences"
+  processed_dataset: "${paths.data_dir}/processed/fba_labeled_proteins.parquet"
+  splits_dir: "${paths.data_dir}/splits"
+  output_dir: "outputs/esm2_650m_lora"
+
+ingest:
+  bigg_base_url: "http://bigg.ucsd.edu/api/v2"
+  uniprot_rest_url: "https://rest.uniprot.org/uniprotkb"
+  ncbi_efetch_url: "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+  request_timeout_sec: 30
+  # Curated Scope: 15 well-curated bacterial GEMs from BiGG (Week 1 Blueprint)
+  curated_bigg_models:
+    - "iML1515"      # Escherichia coli str. K-12 substr. MG1655
+    - "iJO1366"      # Escherichia coli str. K-12 substr. MG1655
+    - "iYO844"       # Bacillus subtilis subsp. subtilis str. 168
+    - "iJN1463"      # Pseudomonas putida KT2440
+    - "STM_v1_0"     # Salmonella enterica subsp. enterica serovar Typhimurium str. LT2
+    - "iEK1008"      # Mycobacterium tuberculosis H37Rv
+    - "iNJ661"       # Mycobacterium tuberculosis H37Rv
+    - "iHN637"       # Clostridium ljungdahlii DSM 13528
+    - "iIT341"       # Helicobacter pylori 26695
+    - "iSB619"       # Staphylococcus aureus subsp. aureus N315
+    - "iAF692"       # Methanosarcina barkeri str. Fusaro
+    - "iYL1228"      # Klebsiella pneumoniae subsp. pneumoniae MGH 78578
+    - "iPC815"       # Yersinia pestis CO92
+    - "iSDY_1059"    # Shigella dysenteriae Sd197
+    - "iCN900"       # Clostridioides difficile 630
+
+fba:
+  task: "gene_essentiality"  # Options: "gene_essentiality", "subsystem_classification"
+  essentiality_threshold: 0.05  # Knocked-out biomass growth ratio < 5% of WT => essential (1)
+  processes: 4
+  solver: "glpk"
+
+split:
+  min_seq_id: 0.30           # Strict 30% sequence identity threshold
+  coverage: 0.80             # Alignment coverage threshold (-c 0.8)
+  cov_mode: 0                # Bidirectional coverage mode
+  train_ratio: 0.80
+  val_ratio: 0.10
+  test_ratio: 0.10
+  mmseqs_binary: "mmseqs"
+
+model:
+  pretrained_model_name: "facebook/esm2_t33_650M_UR50D"
+  num_labels: 2
+  max_length: 1024
+  gradient_checkpointing: true
+  lora:
+    r: 16
+    lora_alpha: 32
+    lora_dropout: 0.05
+    bias: "none"
+    target_modules:
+      - "query"
+      - "key"
+      - "value"
+      - "dense"
+  classifier_dropout: 0.1
+
+training:
+  precision: "bf16"
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 8
+  gradient_accumulation_steps: 8   # Effective batch size = 32 on 12GB RTX 4070
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.06
+  max_grad_norm: 1.0
+  num_train_epochs: 10
+  early_stopping_patience: 3
+  num_workers: 4
+  log_every_n_steps: 10
+  eval_every_n_epochs: 1
+
+wandb:
+  enabled: false
+  project: "metabolic-plm"
+  entity: null
+  run_name: "esm2_650m_lora_bf16_bigg15"
+  tags:
+    - "esm2-650m"
+    - "lora"
+    - "bf16"
+    - "mmseqs2-30pct"
+    - "cobra-fba"
