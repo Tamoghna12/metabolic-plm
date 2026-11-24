@@ -1,9 +1,13 @@
 .venv/
-data/
+/data/
+/outputs/*
+!/outputs/random_esm2_lora/
+!/outputs/homology_esm2_lora/
+/outputs/*_esm2_lora/*
+!/outputs/*_esm2_lora/ablation_summary.json
 __pycache__/
 *.egg-info/
 wandb/
-outputs/
 multirun/
 .pytest_cache/
 .ruff_cache/

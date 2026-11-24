@@ -1,6 +1,6 @@
 # metabolic-plm
 
-Production-grade, containerized Python package that fine-tunes **ESM-2 (650M)** (`facebook/esm2_t33_650M_UR50D`) with **PEFT/LoRA** and **bfloat16 (`bf16`)** mixed precision on a **12GB NVIDIA RTX 4070** to predict microbial metabolic phenotypes (single-gene deletion essentiality validated via **COBRApy Flux Balance Analysis**), using strict **30% sequence identity** homology-aware train/validation/test splits.
+Containerized Python package that fine-tunes **ESM-2 (650M)** (`facebook/esm2_t33_650M_UR50D`) with **PEFT/LoRA** and **bfloat16 (`bf16`)** mixed precision on a **12GB NVIDIA RTX 4070** to predict microbial metabolic phenotypes (single-gene deletion essentiality validated via **COBRApy Flux Balance Analysis**), using **30% sequence identity** homology-aware train/validation/test splits.
 
 ---
 
@@ -8,12 +8,12 @@ Production-grade, containerized Python package that fine-tunes **ESM-2 (650M)** 
 
 Standard random splits on multi-species microbial datasets leak orthologous genes (e.g., *E. coli* `iML1515` vs. *S. enterica* `STM_v1_0` vs. *P. putida* `iJN1463`) across train and test sets, allowing protein language models to memorize sequence homology rather than learning metabolic essentiality.
 
-We quantified this exact generalization gap across **3,416 FBA-labeled protein sequences** (`565` essential [16.54%], `2,851` non-essential [83.46%], `pos_weight=5.06`, `2,392` train / `512` val / `512` test) over 5 epochs on a single **NVIDIA GeForce RTX 4070 (12GB)**:
+We quantified this generalization gap across **3,416 FBA-labeled protein sequences** (`565` essential [16.54%], `2,851` non-essential [83.46%], `pos_weight=5.06`, `2,392` train / `512` val / `512` test) over 5 epochs on a single **NVIDIA GeForce RTX 4070 (12GB)**. Raw epoch logs and test metrics are pinned in [`outputs/random_esm2_lora/ablation_summary.json`](outputs/random_esm2_lora/ablation_summary.json) and [`outputs/homology_esm2_lora/ablation_summary.json`](outputs/homology_esm2_lora/ablation_summary.json):
 
-| Experiment | Split Strategy | Distinct Clusters | Best Val AUPRC | Test AUPRC | Test AUROC | Test Accuracy | What It Proves |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Run A (Naive Baseline)** | Random 70/15/15 split (`--strategy random`) | 3,416 (Unclustered) | **0.7212** | **0.6629** | **0.8960** | **84.96%** | Memorizing near-identical orthologs across related bacterial species yields an artificially inflated **0.6629 Test AUPRC** and **0.8960 AUROC**. |
-| **Run B (Homology-Split)** | 30% sequence identity split (`--strategy homology`) | 1,336 homology families | **0.5277** | **0.4130** | **0.7539** | **81.84%** | True out-of-distribution generalization to unseen protein families (<30% identity) drops Test AUPRC by **-24.99 percentage points (-37.7% relative)** and Test AUROC by **-14.21 points**, exposing the true difficulty of zero-shot metabolic phenotype prediction. |
+| Experiment | Split Strategy | Pinned Artifact | Distinct Clusters | Best Val AUPRC | Test AUPRC | Test AUROC | Test Accuracy | What It Proves |
+| :--- | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **Run A (Naive Baseline)** | Random 70/15/15 split (`--strategy random`) | [`random_esm2_lora/ablation_summary.json`](outputs/random_esm2_lora/ablation_summary.json) | 3,416 (Unclustered) | **0.7212** | **0.6629** | **0.8960** | **84.96%** | Memorizing near-identical orthologs across related bacterial species yields an artificially inflated **0.6629 Test AUPRC** and **0.8960 AUROC**. |
+| **Run B (Homology-Split)** | 30% sequence identity split (`--strategy homology`) | [`homology_esm2_lora/ablation_summary.json`](outputs/homology_esm2_lora/ablation_summary.json) | 1,336 homology families | **0.5277** | **0.4130** | **0.7539** | **81.84%** | Out-of-distribution generalization to unseen protein families (<30% identity) drops Test AUPRC by **-24.99 percentage points (-37.7% relative)** and Test AUROC by **-14.21 points**, exposing the difficulty of cross-family metabolic phenotype prediction. |
 
 ### Epoch-by-Epoch Generalization Dynamics
 
@@ -54,22 +54,13 @@ metabolic-plm/
 │       └── ci.yml                          # GitHub Actions CI (ruff check/format + pytest)
 ├── configs/
 │   └── train_esm2_lora.yaml                # Hydra config (ESM-2 650M, LoRA r=8, bf16, RTX 4070)
-├── data/                                   # Git-ignored datasets & splits
-│   ├── raw/
-│   │   └── bigg/                           # 8 curated BiGG bacterial GEMs (JSON)
-│   ├── processed/
-│   │   ├── metabolic_dataset.parquet       # 3,416 FBA-labeled proteins mapped to UniProt/NCBI
-│   │   └── sequences.fasta                 # FASTA sequences for MMseqs2 clustering
-│   └── splits/
-│       ├── random_split.parquet            # Run A: Naive 70/15/15 random split
-│       └── homology_split.parquet          # Run B: 30% sequence identity homology split
 ├── docker/
 │   └── Dockerfile                          # Reproducible CUDA 12.4 + PyTorch + COBRApy + MMseqs2 image
-├── outputs/                                # Git-ignored training & ablation telemetry
+├── outputs/
 │   ├── random_esm2_lora/
-│   │   └── ablation_summary.json           # Run A metrics & RTX 4070 hardware telemetry
+│   │   └── ablation_summary.json           # Pinned Run A metrics & RTX 4070 hardware telemetry
 │   └── homology_esm2_lora/
-│       └── ablation_summary.json           # Run B metrics & RTX 4070 hardware telemetry
+│       └── ablation_summary.json           # Pinned Run B metrics & RTX 4070 hardware telemetry
 ├── src/
 │   └── metabolic_plm/
 │       ├── __init__.py
@@ -83,12 +74,14 @@ metabolic-plm/
 │       │   └── esm_lora.py                 # ESM-2 (650M) + PEFT/LoRA + masked mean pooling head
 │       └── train.py                        # bf16 training loop, dynamic padding, W&B & GPU telemetry
 ├── tests/
+│   ├── fixtures/
+│   │   └── toy_bigg_model.json             # 5-gene offline BiGG JSON fixture for CI FBA testing
 │   ├── test_smoke.py                       # Curated BiGG model list test
-│   ├── test_fba_labels.py                  # FBA essentiality threshold logic test
+│   ├── test_fba_labels.py                  # Calls extract_gene_labels & build_dataset on toy_bigg_model.json
 │   ├── test_splits.py                      # Verifies ZERO sequence leakage across splits
 │   └── test_model_forward.py               # Verifies tensor shapes, dynamic padding & gradient flow
-├── wandb/                                  # Git-ignored Weights & Biases run logs
 ├── .gitignore
+├── LICENSE                                 # MIT License
 ├── pyproject.toml                          # Package dependencies, ruff & pytest configuration
 ├── README.md                               # Architecture, ablation results & reproducibility guide
 └── uv.lock                                 # Deterministic uv dependency lockfile
@@ -98,7 +91,7 @@ metabolic-plm/
 
 ## 4. Scoped Dataset (8 Curated Bacterial GEMs from BiGG)
 
-Instead of downloading all 7,302 AGORA2 models in Week 1, `metabolic_plm.data.ingest` pulls 8 high-quality bacterial Genome-Scale Metabolic Models (GEMs) from **BiGG Models**:
+Instead of downloading all 7,302 AGORA2 models in Week 1, `metabolic_plm.data.ingest` pulls 8 bacterial Genome-Scale Metabolic Models (GEMs) from **BiGG Models**:
 - `iML1515` & `iAF1260` (*Escherichia coli* str. K-12 substr. MG1655)
 - `iYO844` (*Bacillus subtilis* subsp. *subtilis* str. 168)
 - `iJN1463` (*Pseudomonas putida* KT2440)
@@ -118,7 +111,7 @@ Instead of downloading all 7,302 AGORA2 models in Week 1, `metabolic_plm.data.in
 uv venv
 uv pip install -e ".[dev]"
 
-# 2. Run Ruff linter, format check, and Pytest suite
+# 2. Run Ruff linter, format check, and offline Pytest suite
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run pytest
@@ -136,3 +129,9 @@ uv run python -m metabolic_plm.data.split
 uv run python -m metabolic_plm.train --strategy random
 uv run python -m metabolic_plm.train --strategy homology
 ```
+
+---
+
+## 6. License
+
+Released under the [MIT License](LICENSE).

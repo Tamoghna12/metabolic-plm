@@ -1,0 +1,145 @@
+{
+  "id": "iTOY4",
+  "name": "Toy 4-gene metabolic model for offline FBA essentiality testing",
+  "compartments": {
+    "c": "cytosol",
+    "e": "extracellular"
+  },
+  "metabolites": [
+    {
+      "id": "glc_e",
+      "name": "D-Glucose extracellular",
+      "compartment": "e"
+    },
+    {
+      "id": "glc_c",
+      "name": "D-Glucose cytosol",
+      "compartment": "c"
+    },
+    {
+      "id": "int_c",
+      "name": "Intermediate metabolite",
+      "compartment": "c"
+    },
+    {
+      "id": "bm_c",
+      "name": "Biomass precursor",
+      "compartment": "c"
+    }
+  ],
+  "genes": [
+    {
+      "id": "g_essential",
+      "name": "Essential transporter gene",
+      "annotation": {
+        "uniprot": ["P00001"],
+        "ncbigene": ["1001"]
+      }
+    },
+    {
+      "id": "g_subthreshold",
+      "name": "Major flux branch gene (KO drops flux to 2% of WT < 5% threshold)",
+      "annotation": {
+        "uniprot": ["P00002"],
+        "ncbigene": ["1002"]
+      }
+    },
+    {
+      "id": "g_minor",
+      "name": "Minor flux branch gene (KO leaves 98% of WT >= 5% threshold)",
+      "annotation": {
+        "uniprot": ["P00003"],
+        "ncbigene": ["1003"]
+      }
+    },
+    {
+      "id": "g_iso1",
+      "name": "Redundant isozyme 1",
+      "annotation": {
+        "uniprot": ["P00004"],
+        "ncbigene": ["1004"]
+      }
+    },
+    {
+      "id": "g_iso2",
+      "name": "Redundant isozyme 2",
+      "annotation": {
+        "uniprot": ["P00005"],
+        "ncbigene": ["1005"]
+      }
+    }
+  ],
+  "reactions": [
+    {
+      "id": "EX_glc_e",
+      "name": "Glucose exchange",
+      "metabolites": {
+        "glc_e": -1.0
+      },
+      "lower_bound": -10.0,
+      "upper_bound": 1000.0,
+      "gene_reaction_rule": "",
+      "subsystem": "Exchange"
+    },
+    {
+      "id": "GLC_TRANS",
+      "name": "Essential glucose uptake",
+      "metabolites": {
+        "glc_e": -1.0,
+        "glc_c": 1.0
+      },
+      "lower_bound": 0.0,
+      "upper_bound": 1000.0,
+      "gene_reaction_rule": "g_essential",
+      "subsystem": "Transport"
+    },
+    {
+      "id": "PATH_MAJOR",
+      "name": "Major conversion branch (cap 9.8)",
+      "metabolites": {
+        "glc_c": -1.0,
+        "int_c": 1.0
+      },
+      "lower_bound": 0.0,
+      "upper_bound": 9.8,
+      "gene_reaction_rule": "g_subthreshold",
+      "subsystem": "Glycolysis"
+    },
+    {
+      "id": "PATH_MINOR",
+      "name": "Minor bypass branch (cap 0.2 -> 2% of WT=10.0)",
+      "metabolites": {
+        "glc_c": -1.0,
+        "int_c": 1.0
+      },
+      "lower_bound": 0.0,
+      "upper_bound": 0.2,
+      "gene_reaction_rule": "g_minor",
+      "subsystem": "Alternate Carbon"
+    },
+    {
+      "id": "ISO_STEP",
+      "name": "Redundant isozyme synthesis step",
+      "metabolites": {
+        "int_c": -1.0,
+        "bm_c": 1.0
+      },
+      "lower_bound": 0.0,
+      "upper_bound": 1000.0,
+      "gene_reaction_rule": "g_iso1 or g_iso2",
+      "subsystem": "Biosynthesis"
+    },
+    {
+      "id": "BIOMASS",
+      "name": "Biomass objective reaction",
+      "metabolites": {
+        "bm_c": -1.0
+      },
+      "lower_bound": 0.0,
+      "upper_bound": 1000.0,
+      "gene_reaction_rule": "",
+      "objective_coefficient": 1.0,
+      "subsystem": "Biomass"
+    }
+  ]
+}
