@@ -1,4 +1,4 @@
-"""Tests verifying ESM-2 + LoRA tensor shapes, parameter freezing, and bf16 gradient flow."""
+"""Tests verifying ESM-2 + LoRA tensor shapes, dynamic padding, pos_weight, and telemetry."""
 
 from __future__ import annotations
 
@@ -9,22 +9,25 @@ from metabolic_plm.models.esm_lora import EsmLoraConfig, EsmLoraForMetabolicPhen
 from metabolic_plm.train import (
     ProteinSequenceDataset,
     TrainerConfig,
+    build_cosine_schedule_with_warmup,
     build_optimizer,
+    dynamic_pad_collate_fn,
     evaluate_model,
-    train_one_epoch,
+    train_one_epoch_with_telemetry,
 )
 
 
 def test_esm_lora_forward_shapes_and_gradient_flow() -> None:
-    """Verify forward output shapes, loss computation, and strict LoRA gradient isolation."""
+    """Verify forward output shapes, pos_weight BCE loss, and strict LoRA gradient isolation."""
     torch.manual_seed(42)
 
     cfg = EsmLoraConfig(
-        num_labels=2,
+        num_labels=1,
         lora_r=8,
         lora_alpha=16,
-        lora_dropout=0.05,
-        target_modules=("query", "key", "value", "dense"),
+        lora_dropout=0.10,
+        target_modules=("query", "key", "value"),
+        pos_weight=5.06,
         use_pretrained=False,
         vocab_size=33,
         hidden_size=64,
@@ -43,6 +46,8 @@ def test_esm_lora_forward_shapes_and_gradient_flow() -> None:
     assert any("lora_B" in name for name in lora_param_names)
     assert any("classifier" in name for name in lora_param_names)
     assert not any("base_layer.weight" in name for name in lora_param_names)
+    # "dense" is not in target_modules=("query", "key", "value"), so it must stay frozen
+    assert not any("dense.lora_" in name for name in lora_param_names)
 
     batch_size = 4
     seq_len = 32
@@ -55,7 +60,7 @@ def test_esm_lora_forward_shapes_and_gradient_flow() -> None:
 
     output = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
 
-    assert output.logits.shape == (batch_size, cfg.num_labels)
+    assert output.logits.shape == (batch_size, 1)
     assert output.pooled_embeddings is not None
     assert output.pooled_embeddings.shape == (batch_size, cfg.hidden_size)
     assert output.loss is not None
@@ -73,42 +78,80 @@ def test_esm_lora_forward_shapes_and_gradient_flow() -> None:
             assert param.grad is None, f"Frozen parameter {name} unexpectedly received a gradient"
 
 
-def test_bf16_training_and_evaluation_step() -> None:
-    """Verify end-to-end bf16 autocast training loop and evaluation metrics on a dummy batch."""
+def test_bf16_training_telemetry_dynamic_padding_and_auprc() -> None:
+    """Verify dynamic batch padding, cosine warmup schedule, throughput telemetry, and AUPRC."""
     torch.manual_seed(7)
 
     cfg = EsmLoraConfig(
-        num_labels=2,
-        lora_r=4,
-        lora_alpha=8,
+        num_labels=1,
+        lora_r=8,
+        lora_alpha=16,
+        lora_dropout=0.10,
+        target_modules=("query", "key", "value"),
+        pos_weight=5.06,
         use_pretrained=False,
         hidden_size=32,
         num_hidden_layers=2,
     )
     model = EsmLoraForMetabolicPhenotype(cfg)
-    optimizer = build_optimizer(model, learning_rate=1e-3)
+    optimizer = build_optimizer(model, learning_rate=3e-4)
+    scheduler = build_cosine_schedule_with_warmup(
+        optimizer, num_warmup_steps=1, num_training_steps=4
+    )
 
+    # Variable-length sequences to verify dynamic padding per batch
     sequences = [
-        "MKKVLVLGASGGIGQPLSLLLKNSPLVSELSLY",
+        "MKKVLVLGASGGIGQPLSLL",
         "MNTQIIIFALVILLGLFFGIVIGRLPFKPVRKW",
-        "MSHQHTSQVWHRGWACAQPEGENWYACMPNFGT",
-        "MTDTRRTRRGRRDRRNRRDRRERRQRRDRRHRR",
+        "MSHQHTSQVWHRGW",
+        "MTDTRRTRRGRRDRRNRRDRRERRQRRDRRHRRDRRTRR",
     ]
     labels = [1, 0, 1, 0]
-    dataset = ProteinSequenceDataset(sequences=sequences, labels=labels, max_length=40)
-    loader = DataLoader(dataset, batch_size=2, shuffle=False)
+    dataset = ProteinSequenceDataset(
+        sequences=sequences,
+        labels=labels,
+        max_length=1022,
+        dynamic_padding=True,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=2,
+        shuffle=False,
+        collate_fn=dynamic_pad_collate_fn,
+    )
+
+    first_batch = next(iter(loader))
+    # First batch has lengths 20 (+2 = 22) and 33 (+2 = 35), so dynamic batch length must be 35
+    assert first_batch["input_ids"].shape == (2, 35)
+    assert int(first_batch["attention_mask"][0].sum().item()) == 22
+    assert int(first_batch["attention_mask"][1].sum().item()) == 35
 
     trainer_cfg = TrainerConfig(
-        learning_rate=1e-3,
+        learning_rate=3e-4,
         gradient_accumulation_steps=2,
+        pos_weight=5.06,
         use_bf16=True,
         device="cpu",
     )
 
-    epoch_loss = train_one_epoch(model, loader, optimizer, trainer_cfg)
-    assert epoch_loss > 0.0
+    telemetry = train_one_epoch_with_telemetry(
+        model=model,
+        dataloader=loader,
+        optimizer=optimizer,
+        cfg=trainer_cfg,
+        scheduler=scheduler,
+    )
+    assert telemetry.train_loss > 0.0
+    assert telemetry.total_samples == 4
+    assert telemetry.total_tokens == (22 + 35 + 16 + 41)
+    assert telemetry.samples_per_sec > 0.0
+    assert telemetry.tokens_per_sec > 0.0
+    assert telemetry.peak_vram_gb >= 0.0
 
     metrics = evaluate_model(model, loader, trainer_cfg)
     assert "eval_loss" in metrics
     assert "eval_accuracy" in metrics
-    assert 0.0 <= metrics["eval_accuracy"] <= 1.0
+    assert "eval_auprc" in metrics
+    assert "eval_auroc" in metrics
+    assert 0.0 <= metrics["eval_auprc"] <= 1.0
+    assert 0.0 <= metrics["eval_auroc"] <= 1.0

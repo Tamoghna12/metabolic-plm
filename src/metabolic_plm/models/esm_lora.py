@@ -5,6 +5,7 @@ Optimized for 12GB VRAM (NVIDIA RTX 4070) using:
   - Activation / gradient checkpointing on encoder layers
   - Low-Rank Adaptation (LoRA) targeting self-attention projections (`query`, `key`, `value`)
   - Masked mean pooling over non-padding residue embeddings before classification
+  - Class-imbalance weighted binary cross-entropy (`pos_weight=5.06`) or multi-class cross-entropy
 """
 
 from __future__ import annotations
@@ -21,17 +22,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class EsmLoraConfig:
-    """Configuration for ESM-2 + LoRA metabolic phenotype classifier."""
+    """Configuration for ESM-2 + LoRA metabolic phenotype classifier (RTX 4070 12GB defaults)."""
 
     pretrained_model_name: str = "facebook/esm2_t33_650M_UR50D"
-    num_labels: int = 2
-    lora_r: int = 16
-    lora_alpha: int = 32
-    lora_dropout: float = 0.05
-    target_modules: tuple[str, ...] = field(
-        default_factory=lambda: ("query", "key", "value", "dense")
-    )
+    num_labels: int = 1
+    lora_r: int = 8
+    lora_alpha: int = 16
+    lora_dropout: float = 0.10
+    target_modules: tuple[str, ...] = field(default_factory=lambda: ("query", "key", "value"))
     classifier_dropout: float = 0.10
+    pos_weight: float = 5.06
     gradient_checkpointing: bool = True
     use_pretrained: bool = True
     # Lightweight synthetic backbone settings when use_pretrained=False (unit tests / CI)
@@ -60,9 +60,9 @@ class LoRALinear(nn.Module):
     def __init__(
         self,
         base_layer: nn.Linear,
-        r: int = 16,
-        lora_alpha: int = 32,
-        lora_dropout: float = 0.05,
+        r: int = 8,
+        lora_alpha: int = 16,
+        lora_dropout: float = 0.10,
     ) -> None:
         super().__init__()
         if r <= 0:
@@ -156,9 +156,9 @@ class _SyntheticEsmBackbone(nn.Module):
 def inject_lora_adapters(
     backbone: nn.Module,
     target_modules: tuple[str, ...],
-    r: int = 16,
-    lora_alpha: int = 32,
-    lora_dropout: float = 0.05,
+    r: int = 8,
+    lora_alpha: int = 16,
+    lora_dropout: float = 0.10,
 ) -> nn.Module:
     """Freeze all backbone weights and wrap matching `nn.Linear` layers with LoRA adapters.
 
@@ -224,6 +224,8 @@ class EsmLoraForMetabolicPhenotype(nn.Module):
 
         if config.gradient_checkpointing and hasattr(backbone, "gradient_checkpointing_enable"):
             backbone.gradient_checkpointing_enable()
+            if hasattr(backbone, "enable_input_require_grads"):
+                backbone.enable_input_require_grads()
 
         self.encoder = inject_lora_adapters(
             backbone=backbone,
@@ -276,10 +278,20 @@ class EsmLoraForMetabolicPhenotype(nn.Module):
         loss: torch.Tensor | None = None
         if labels is not None:
             if self.config.num_labels == 1:
-                loss_fn = nn.BCEWithLogitsLoss()
-                loss = loss_fn(logits.squeeze(-1), labels.float())
+                pos_weight_tensor = torch.tensor(
+                    [self.config.pos_weight],
+                    dtype=logits.dtype,
+                    device=logits.device,
+                )
+                loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight_tensor)
+                loss = loss_fn(logits.squeeze(-1), labels.to(dtype=logits.dtype))
             else:
-                loss_fn = nn.CrossEntropyLoss()
+                weight_tensor = torch.tensor(
+                    [1.0, self.config.pos_weight],
+                    dtype=logits.dtype,
+                    device=logits.device,
+                )
+                loss_fn = nn.CrossEntropyLoss(weight=weight_tensor)
                 loss = loss_fn(logits, labels.long())
 
         return ClassifierOutput(
